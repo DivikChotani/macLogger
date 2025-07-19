@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+interprocess = "2.2.3"
 libc = "0.2.174"
 nix = "0.30.1"
+signal-hook = "0.3.18"
 structopt = "0.3.26"
