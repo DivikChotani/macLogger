@@ -17,7 +17,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let opt = Opt::from_args();
     let isRoot = unsafe { getuid() == 0 };
 
-    let mut signals = (Signals::new([SIGINT, SIGTERM]))?;
 
     if (opt.files || opt.network) && !isRoot {
         return Err("To track the network and/or file system you must run as root with sudo, use -h for help".into());
@@ -50,18 +49,27 @@ fn main() -> Result<(), Box<dyn Error>> {
     } else {
         None
     };
-    let mut sys = sys.unwrap();
-    let mut last_few = String::with_capacity(mem::size_of::<char>()* 1024);
+    let mut signals = (Signals::new([SIGINT, SIGTERM]))?;
 
-    loop{
+    let mut sys = sys.unwrap();
+    let mut last_few = String::with_capacity(10);
+    let k = last_few.len();
+    println!("{k}");
+    let mut stay = true;
+    while stay {
         for sig in signals.forever() {
             match sig {
                 SIGINT |
                 SIGTERM => {
+                    sys.kill();
                     sys.wait();
+                    stay = false;
+                    break;
                 },
                 _ => {},
             }
+            println!("HERE");
+
         }
         sys.stdout.take().unwrap().read_to_string(&mut last_few);
 
