@@ -5,22 +5,19 @@ use signal_hook::{
     iterator::{exfiltrator::raw, Signals},
 };
 use std::{
-    any::Any,
-    error::Error,
-    os::{fd::{self, AsFd, AsRawFd, FromRawFd, RawFd}, unix::process::CommandExt},
-    process::{Child, Command, Stdio},
+    any::Any, error::Error, io::{BufRead, Read}, os::{fd::{self, AsFd, AsRawFd, FromRawFd, RawFd}}, process::{Child, Command, Stdio}
 };
 
-use interprocess::unnamed_pipe::pipe;
-use interprocess::unnamed_pipe::Sender;
 use structopt::StructOpt;
 use std::fs::File;
+use std::io::BufReader;
+use std::mem;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let opt = Opt::from_args();
     let isRoot = unsafe { getuid() == 0 };
 
-    let mut signals = (Signals::new([SIGINT, SIGKILL, SIGTERM]))?;
+    let mut signals = (Signals::new([SIGINT, SIGTERM]))?;
 
     if (opt.files || opt.network) && !isRoot {
         return Err("To track the network and/or file system you must run as root with sudo, use -h for help".into());
@@ -30,19 +27,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     //create the subprocess
-    let (sender, receiver) = pipe()?;
-    let senderfd = sender.as_fd().try_clone_to_owned()?.as_raw_fd();
 
     let mut sys = if opt.system {
-        let mut temp = spawn_process("log", &vec!["stream", "--style", "json", "--info"], senderfd);
-        // temp.wait();
+        let mut temp = spawn_process("log", &vec!["stream", "--style", "json", "--info"]);
         Some(temp)
     } else {
         None
     };
 
     let mut fs = if opt.files {
-        let mut temp = (spawn_process("fs_usage", &vec!["-w", "-f", "filesys"], senderfd));
+        let mut temp = (spawn_process("fs_usage", &vec!["-w", "-f", "filesys"]));
         // temp.wait();
         Some(temp)
     } else {
@@ -50,22 +44,39 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
 
     let mut net = if opt.network {
-        let mut temp = (spawn_process("tcpdump", &vec!["-i", "en0", "-l", "-n"], senderfd));
+        let mut temp = (spawn_process("tcpdump", &vec!["-i", "en0", "-l", "-n"]));
         // temp.wait();
         Some(temp)
     } else {
         None
     };
+    let mut sys = sys.unwrap();
+    let mut last_few = String::with_capacity(mem::size_of::<char>()* 1024);
 
+    loop{
+        for sig in signals.forever() {
+            match sig {
+                SIGINT |
+                SIGTERM => {
+                    sys.wait();
+                },
+                _ => {},
+            }
+        }
+        sys.stdout.take().unwrap().read_to_string(&mut last_few);
+
+    }
+    println!("{last_few}");
+
+   
     Ok(())
 }
 
-fn spawn_process(command: &str, args: &Vec<&str>, f: RawFd) -> Child {
+fn spawn_process(command: &str, args: &Vec<&str>) -> Child {
     
-    let file = unsafe {File::from_raw_fd(f)};
     let mut res: Child = Command::new(command)
         .args(args)
-        .stdout(file)
+        .stdout(Stdio::piped())
         .spawn()
         .expect("Failed to run the command");
     return res;
