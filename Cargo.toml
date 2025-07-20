@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 interprocess = "2.2.3"
 libc = "0.2.174"
-nix = "0.30.1"
+nix = { version = "0.26", features = ["fs"] }
 signal-hook = "0.3.18"
 structopt = "0.3.26"
+tempdir = "0.3.7"

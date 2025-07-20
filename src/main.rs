@@ -1,24 +1,27 @@
-use libc;
-use nix::{libc::getuid, unistd};
+use libc::{self, mkfifo};
+use nix::{libc::getuid, unistd, sys::stat};
 use signal_hook::{
     consts::{SIGINT, SIGKILL, SIGTERM},
     iterator::{exfiltrator::raw, Signals},
 };
 use std::{
-    any::Any, error::Error, io::{BufRead, Read}, os::{fd::{self, AsFd, AsRawFd, FromRawFd, RawFd}}, process::{Child, Command, Stdio}
+    any::Any, error::Error, io::{BufRead, Read, BufReader}, os::{fd::{self, AsFd, AsRawFd, FromRawFd, RawFd}}, process::{Child, Command, Stdio}
 };
 
 use structopt::StructOpt;
 use std::fs::File;
-use std::io::BufReader;
 use std::mem;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool};
+use signal_hook::flag;
+use tempdir::TempDir;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let opt = Opt::from_args();
-    let isRoot = unsafe { getuid() == 0 };
+    let is_root = unsafe { getuid() == 0 };
 
 
-    if (opt.files || opt.network) && !isRoot {
+    if (opt.files || opt.network) && !is_root {
         return Err("To track the network and/or file system you must run as root with sudo, use -h for help".into());
     }
     if !(opt.files || opt.network || opt.system) {
@@ -26,9 +29,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     //create the subprocess
+    let tmp_dir = TempDir::new("test_fifo").unwrap();
+    let fifo_path = tmp_dir.path().join("foo.pipe");
+
+    unistd::mkfifo(&fifo_path, stat::Mode::S_IRWXU)?;
 
     let mut sys = if opt.system {
-        let mut temp = spawn_process("log", &vec!["stream", "--style", "json", "--info"]);
+        let mut temp = spawn_process("log", &vec!["stream", "--style", "ndjson", "--info"]);
         Some(temp)
     } else {
         None
@@ -49,39 +56,38 @@ fn main() -> Result<(), Box<dyn Error>> {
     } else {
         None
     };
-    let mut signals = (Signals::new([SIGINT, SIGTERM]))?;
-
+    let term = Arc::new(AtomicBool::new(false));
     let mut sys = sys.unwrap();
-    let mut last_few = String::with_capacity(10);
-    let k = last_few.len();
-    println!("{k}");
-    let mut stay = true;
-    while stay {
-        for sig in signals.forever() {
-            match sig {
-                SIGINT |
-                SIGTERM => {
-                    sys.kill();
-                    sys.wait();
-                    stay = false;
-                    break;
-                },
-                _ => {},
+    let sys_stdout = sys.stdout.take().unwrap();
+    let mut reader = BufReader::new(sys_stdout);
+    unsafe {
+        flag::register(SIGINT, Arc::clone(&term))?;
+        flag::register(SIGTERM, Arc::clone(&term))?;
+    };
+
+    while !term.load(std::sync::atomic::Ordering::Relaxed) {
+        let mut line = String::new();
+        if let Ok(n) = reader.read_line(&mut line) {
+            if n == 0 {
+                println!("GY");
             }
-            println!("HERE");
-
+            println!("{line}");
         }
-        sys.stdout.take().unwrap().read_to_string(&mut last_few);
-
     }
-    println!("{last_few}");
+    sys.kill();
+    sys.wait();
+
+
+
+    
+
+  
 
    
     Ok(())
 }
 
 fn spawn_process(command: &str, args: &Vec<&str>) -> Child {
-    
     let mut res: Child = Command::new(command)
         .args(args)
         .stdout(Stdio::piped())
