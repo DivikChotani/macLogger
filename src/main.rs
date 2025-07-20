@@ -5,7 +5,7 @@ use signal_hook::{
     iterator::{exfiltrator::raw, Signals},
 };
 use std::{
-    any::Any, error::Error, io::{BufRead, BufReader, Read}, os::fd::{self, AsFd, AsRawFd, FromRawFd, RawFd}, process::{Child, ChildStdout, Command, Stdio}, thread::{JoinHandle, Thread}
+    any::Any, error::Error, io::{BufRead, BufReader, Read}, iter::Enumerate, os::fd::{self, AsFd, AsRawFd, FromRawFd, RawFd}, process::{Child, ChildStdout, Command, Stdio}, thread::{JoinHandle, Thread}
 };
 
 use structopt::StructOpt;
@@ -87,7 +87,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
 
     for message in r.into_iter() {
-        println!("Message")
+        println!("{message}");
+    }
+
+    for (i, t) in polling_threads.into_iter().enumerate() {
+        println!("{i}");
+        t.join();
     }
 
     Ok(())
