@@ -5,7 +5,7 @@ use signal_hook::{
     iterator::{exfiltrator::raw, Signals},
 };
 use std::{
-    any::Any, error::Error, io::{BufRead, BufReader, Read}, os::fd::{self, AsFd, AsRawFd, FromRawFd, RawFd}, process::{Child, ChildStdout, Command, Stdio}
+    any::Any, error::Error, io::{BufRead, BufReader, Read}, os::fd::{self, AsFd, AsRawFd, FromRawFd, RawFd}, process::{Child, ChildStdout, Command, Stdio}, thread::{JoinHandle, Thread}
 };
 
 use structopt::StructOpt;
@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool};
 use signal_hook::flag;
 use std::thread;
 
+use crossbeam_channel::unbounded;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let opt = Opt::from_args();
@@ -55,33 +56,42 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let child_ps = vec![sys, fs, net];
 
-
-    let mut child_readers: Vec<BufReader<ChildStdout>> = Vec::new();
-    for mut child in child_ps {
-        if let Some(mut c_process) = child {
-            let temp = c_process.stdout.take().unwrap();
-            let reader = BufReader::new(temp);
-            &child_readers.push(reader);
-        }
-    }
-
     let term = Arc::new(AtomicBool::new(false));
-    
 
     flag::register(SIGINT, Arc::clone(&term))?;
     flag::register(SIGTERM, Arc::clone(&term))?;
 
+    let mut polling_threads: Vec<JoinHandle<()>> = Vec::new();
 
-    while !term.load(std::sync::atomic::Ordering::Relaxed) {
-        for reader in &mut child_readers{
-            let mut line = String::new();
-            if let Ok(n) = reader.read_line(&mut line) {
-                if n != 0 {
-                    println!("{line}");                    
+    for child in child_ps {
+
+        let Some(kid) = child else {
+            continue;
+        };
+
+        let kid = kid.stdout.unwrap();
+        let mut reader = BufReader::new(kid);
+        let term_ref = Arc::clone(&term);
+
+        let t = thread::spawn(move || {
+            while !term_ref.load(std::sync::atomic::Ordering::Relaxed) {
+                let mut line = String::new();
+                if let Ok(n) = reader.read_line(&mut line) {
+                    if n != 0 {
+                        println!("{line}");                    
+                    }
                 }
             }
-        }
-    }
+        });
+        polling_threads.push(t);
+    };
+
+
+
+    
+
+ 
+
 
 
 
