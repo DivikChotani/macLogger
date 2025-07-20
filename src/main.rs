@@ -54,7 +54,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         None
     };
 
-    let child_ps = vec![sys, fs, net];
+    let (s, r) = unbounded();
+
+    let child_ps = vec![("log",sys), ("fs_usage", fs), ("tcpdump", net)];
 
     let term = Arc::new(AtomicBool::new(false));
 
@@ -63,7 +65,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut polling_threads: Vec<JoinHandle<()>> = Vec::new();
 
-    for child in child_ps {
+    for (cmd, child) in child_ps {
 
         let Some(kid) = child else {
             continue;
@@ -72,35 +74,22 @@ fn main() -> Result<(), Box<dyn Error>> {
         let kid = kid.stdout.unwrap();
         let mut reader = BufReader::new(kid);
         let term_ref = Arc::clone(&term);
-
+        let send = s.clone();
         let t = thread::spawn(move || {
             while !term_ref.load(std::sync::atomic::Ordering::Relaxed) {
                 let mut line = String::new();
                 if let Ok(n) = reader.read_line(&mut line) {
-                    if n != 0 {
-                        println!("{line}");                    
-                    }
+                    send.send(cmd);
                 }
             }
         });
         polling_threads.push(t);
     };
 
+    for message in r.into_iter() {
+        println!("Message")
+    }
 
-
-    
-
- 
-
-
-
-
-
-    
-
-  
-
-   
     Ok(())
 }
 
