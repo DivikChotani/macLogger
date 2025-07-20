@@ -5,7 +5,7 @@ use signal_hook::{
     iterator::{exfiltrator::raw, Signals},
 };
 use std::{
-    any::Any, error::Error, io::{BufRead, Read, BufReader}, os::{fd::{self, AsFd, AsRawFd, FromRawFd, RawFd}}, process::{Child, Command, Stdio}
+    any::Any, error::Error, io::{BufRead, BufReader, Read}, os::fd::{self, AsFd, AsRawFd, FromRawFd, RawFd}, process::{Child, ChildStdout, Command, Stdio}
 };
 
 use structopt::StructOpt;
@@ -14,7 +14,8 @@ use std::mem;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool};
 use signal_hook::flag;
-use tempdir::TempDir;
+use std::thread;
+
 
 fn main() -> Result<(), Box<dyn Error>> {
     let opt = Opt::from_args();
@@ -29,11 +30,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     //create the subprocess
-    let tmp_dir = TempDir::new("test_fifo").unwrap();
-    let fifo_path = tmp_dir.path().join("foo.pipe");
-
-    unistd::mkfifo(&fifo_path, stat::Mode::S_IRWXU)?;
-
     let mut sys = if opt.system {
         let mut temp = spawn_process("log", &vec!["stream", "--style", "ndjson", "--info"]);
         Some(temp)
@@ -56,26 +52,37 @@ fn main() -> Result<(), Box<dyn Error>> {
     } else {
         None
     };
-    let term = Arc::new(AtomicBool::new(false));
-    let mut sys = sys.unwrap();
-    let sys_stdout = sys.stdout.take().unwrap();
-    let mut reader = BufReader::new(sys_stdout);
-    unsafe {
-        flag::register(SIGINT, Arc::clone(&term))?;
-        flag::register(SIGTERM, Arc::clone(&term))?;
-    };
 
-    while !term.load(std::sync::atomic::Ordering::Relaxed) {
-        let mut line = String::new();
-        if let Ok(n) = reader.read_line(&mut line) {
-            if n == 0 {
-                println!("GY");
-            }
-            println!("{line}");
+    let child_ps = vec![sys, fs, net];
+
+
+    let mut child_readers: Vec<BufReader<ChildStdout>> = Vec::new();
+    for mut child in child_ps {
+        if let Some(mut c_process) = child {
+            let temp = c_process.stdout.take().unwrap();
+            let reader = BufReader::new(temp);
+            &child_readers.push(reader);
         }
     }
-    sys.kill();
-    sys.wait();
+
+    let term = Arc::new(AtomicBool::new(false));
+    
+
+    flag::register(SIGINT, Arc::clone(&term))?;
+    flag::register(SIGTERM, Arc::clone(&term))?;
+
+
+    while !term.load(std::sync::atomic::Ordering::Relaxed) {
+        for reader in &mut child_readers{
+            let mut line = String::new();
+            if let Ok(n) = reader.read_line(&mut line) {
+                if n != 0 {
+                    println!("{line}");                    
+                }
+            }
+        }
+    }
+
 
 
 
