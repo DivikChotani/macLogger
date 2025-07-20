@@ -67,33 +67,38 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     for (cmd, child) in child_ps {
 
-        let Some(kid) = child else {
+        let Some(mut kid) = child else {
             continue;
         };
 
-        let kid = kid.stdout.unwrap();
-        let mut reader = BufReader::new(kid);
         let term_ref = Arc::clone(&term);
         let send = s.clone();
         let t = thread::spawn(move || {
+            let kid_stdout = kid.stdout.take().unwrap();
+            let mut reader = BufReader::new(kid_stdout);
             while !term_ref.load(std::sync::atomic::Ordering::Relaxed) {
                 let mut line = String::new();
                 if let Ok(n) = reader.read_line(&mut line) {
                     send.send(cmd);
                 }
             }
+            kid.kill();
+            kid.wait();
         });
         polling_threads.push(t);
     };
 
-    for message in r.into_iter() {
-        println!("{message}");
+    while !term.load(std::sync::atomic::Ordering::Relaxed) {
+        if !r.is_empty() {
+            let mes = r.recv().unwrap();
+            println!("{mes}")
+        }
     }
-
+    let l = polling_threads.len();
     for (i, t) in polling_threads.into_iter().enumerate() {
-        println!("{i}");
         t.join();
     }
+
 
     Ok(())
 }
