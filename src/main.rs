@@ -9,9 +9,12 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::thread;
 use structopt::StructOpt;
-use serde_json::{from_str, Result as JsonResult};
+use serde_json::{from_str, Result as JsonResult, Value};
 use serde_json::json;
 use crossbeam_channel::unbounded;
+use regex::Regex;
+use serde::{Deserialize, Serialize};
+
 
 #[derive(Debug, Clone, Copy)]
 enum LogType {
@@ -78,7 +81,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             while !term_ref.load(std::sync::atomic::Ordering::Relaxed) {
                 let mut line = String::new();
                 if let Ok(_) = reader.read_line(&mut line) {
-                    let a = from_str::<serde_json::Value>(&line).expect("could not jsonize");
                     match send.send((cmd, line)) {
                         Ok(_) => {}
                         Err(_) => {
@@ -87,7 +89,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                         }
                     }
                 }
-                break
             }
             let err = kid.kill();
             let Ok(_) = err else {
@@ -102,7 +103,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     while !term.load(std::sync::atomic::Ordering::Relaxed) {
         match r.recv() {
             Ok((cmd, mes)) => {
-                println!("{mes}");
+                let mes = mes.trim();
+                handle_fs(&mes);
+                // handle_sys(&mes);
+
+                // let json_out = match cmd {
+                //     LogType::Sys => handle_sys(&mes),
+                    
+                // }
+                //println!("{mes}");
             },
             Err(_) => {break}
         }
@@ -113,6 +122,30 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn handle_sys(log: &str) -> Value{
+    from_str::<serde_json::Value>(log).expect("could not jsonize")
+}
+
+fn handle_fs(log: &str){
+
+    //get time
+    let raw_time = Regex::new(r"^([\.:0-9]+)").unwrap();
+    let Some(time) = raw_time.captures(log) else {
+        return
+    };
+    let time = &time[0];
+    
+    let name_id = Regex::new(r"[\w\.]+$").unwrap();
+    let Some(nameid) = name_id.captures(log) else {
+        return
+    };
+    let nameid = &nameid[0];
+    let list: Vec<&str> = nameid.split(".").collect();
+    let p_name = list[0].to_string();
+    let pid = list[list.len()-1].to_string();
+    println!("{nameid}");
+
+}
 
 fn spawn_process(command: &str, args: &Vec<&str>) -> Child {
     let res: Child = Command::new(command)
@@ -120,7 +153,7 @@ fn spawn_process(command: &str, args: &Vec<&str>) -> Child {
         .stdout(Stdio::piped())
         .spawn()
         .expect("Failed to run the command");
-    return res;
+    res
 }
 #[derive(Debug, StructOpt)]
 #[structopt(
@@ -136,4 +169,14 @@ struct Opt {
 
     #[structopt(short = "n", long = "network")]
     network: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+struct FsHandler {
+    time: String,
+    event_type: String,
+    file_path: String,
+    duration: f64,
+    p_name: String,
+    pid: i32
 }
