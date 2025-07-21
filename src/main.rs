@@ -1,27 +1,29 @@
-use libc::{self, mkfifo};
-use nix::{libc::getuid, unistd, sys::stat};
-use signal_hook::{
-    consts::{SIGINT, SIGKILL, SIGTERM},
-    iterator::{exfiltrator::raw, Signals},
-};
+use nix::libc::getuid;
+use signal_hook::consts::{SIGINT, SIGTERM};
 use std::{
-    any::Any, error::Error, io::{BufRead, BufReader, Read}, iter::Enumerate, os::fd::{self, AsFd, AsRawFd, FromRawFd, RawFd}, process::{Child, ChildStdout, Command, Stdio}, thread::{JoinHandle, Thread}
+    error::Error,
+    io::{BufRead, BufReader},
+    process::{Child, Command, Stdio},
+    thread::JoinHandle,
 };
 
-use structopt::StructOpt;
-use std::fs::File;
-use std::mem;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool};
 use signal_hook::flag;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::thread;
+use structopt::StructOpt;
 
 use crossbeam_channel::unbounded;
 
+#[derive(Debug, Clone, Copy)]
+enum LogType {
+    Sys,
+    Fs,
+    Net,
+}
 fn main() -> Result<(), Box<dyn Error>> {
     let opt = Opt::from_args();
     let is_root = unsafe { getuid() == 0 };
-
 
     if (opt.files || opt.network) && !is_root {
         return Err("To track the network and/or file system you must run as root with sudo, use -h for help".into());
@@ -31,23 +33,23 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     //create the subprocess
-    let mut sys = if opt.system {
-        let mut temp = spawn_process("log", &vec!["stream", "--style", "ndjson", "--info"]);
+    let sys = if opt.system {
+        let temp = spawn_process("log", &vec!["stream", "--style", "ndjson", "--info"]);
         Some(temp)
     } else {
         None
     };
 
-    let mut fs = if opt.files {
-        let mut temp = (spawn_process("fs_usage", &vec!["-w", "-f", "filesys"]));
+    let fs = if opt.files {
+        let temp = spawn_process("fs_usage", &vec!["-w", "-f", "filesys"]);
         // temp.wait();
         Some(temp)
     } else {
         None
     };
 
-    let mut net = if opt.network {
-        let mut temp = (spawn_process("tcpdump", &vec!["-i", "en0", "-l", "-n"]));
+    let net = if opt.network {
+        let temp = spawn_process("tcpdump", &vec!["-i", "en0", "-l", "-n"]);
         // temp.wait();
         Some(temp)
     } else {
@@ -56,7 +58,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let (s, r) = unbounded();
 
-    let child_ps = vec![("log",sys), ("fs_usage", fs), ("tcpdump", net)];
+    let child_ps = vec![(LogType::Sys, sys), (LogType::Fs, fs), (LogType::Net, net)];
 
     let term = Arc::new(AtomicBool::new(false));
 
@@ -66,7 +68,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut polling_threads: Vec<JoinHandle<()>> = Vec::new();
 
     for (cmd, child) in child_ps {
-
         let Some(mut kid) = child else {
             continue;
         };
@@ -78,33 +79,41 @@ fn main() -> Result<(), Box<dyn Error>> {
             let mut reader = BufReader::new(kid_stdout);
             while !term_ref.load(std::sync::atomic::Ordering::Relaxed) {
                 let mut line = String::new();
-                if let Ok(n) = reader.read_line(&mut line) {
-                    send.send(cmd);
+                if let Ok(_) = reader.read_line(&mut line) {
+                    match send.send(cmd) {
+                        Ok(_) => {}
+                        Err(_) => {
+                            println!("Failed to send message");
+                            break;
+                        }
+                    }
                 }
             }
-            kid.kill();
-            kid.wait();
+            let err = kid.kill();
+            let Ok(_) = err else {
+                println!("Failed to kill child process");
+                return;
+            };
+            let _ = kid.wait();
         });
         polling_threads.push(t);
-    };
-
+    }
+    drop(s);
     while !term.load(std::sync::atomic::Ordering::Relaxed) {
         if !r.is_empty() {
             let mes = r.recv().unwrap();
-            println!("{mes}")
+            println!("{mes:#?}")
         }
     }
-    let l = polling_threads.len();
-    for (i, t) in polling_threads.into_iter().enumerate() {
-        t.join();
+    for (_i, t) in polling_threads.into_iter().enumerate() {
+        let _ = t.join();
     }
-
 
     Ok(())
 }
 
 fn spawn_process(command: &str, args: &Vec<&str>) -> Child {
-    let mut res: Child = Command::new(command)
+    let res: Child = Command::new(command)
         .args(args)
         .stdout(Stdio::piped())
         .spawn()
