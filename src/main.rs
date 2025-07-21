@@ -1,10 +1,7 @@
 use nix::libc::getuid;
 use signal_hook::consts::{SIGINT, SIGTERM};
 use std::{
-    error::Error,
-    io::{BufRead, BufReader},
-    process::{Child, Command, Stdio},
-    thread::JoinHandle,
+    any::type_name, error::Error, io::{BufRead, BufReader}, process::{Child, Command, Stdio}, thread::JoinHandle
 };
 
 use signal_hook::flag;
@@ -12,7 +9,8 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::thread;
 use structopt::StructOpt;
-
+use serde_json::{from_str, Result as JsonResult};
+use serde_json::json;
 use crossbeam_channel::unbounded;
 
 #[derive(Debug, Clone, Copy)]
@@ -80,14 +78,16 @@ fn main() -> Result<(), Box<dyn Error>> {
             while !term_ref.load(std::sync::atomic::Ordering::Relaxed) {
                 let mut line = String::new();
                 if let Ok(_) = reader.read_line(&mut line) {
-                    match send.send(cmd) {
+                    let a = from_str::<serde_json::Value>(&line).expect("could not jsonize");
+                    match send.send((cmd, line)) {
                         Ok(_) => {}
                         Err(_) => {
                             println!("Failed to send message");
-                            break;
+                            return;
                         }
                     }
                 }
+                break
             }
             let err = kid.kill();
             let Ok(_) = err else {
@@ -100,17 +100,19 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     drop(s);
     while !term.load(std::sync::atomic::Ordering::Relaxed) {
-        if !r.is_empty() {
-            let mes = r.recv().unwrap();
-            println!("{mes:#?}")
+        match r.recv() {
+            Ok((cmd, mes)) => {
+                println!("{mes}");
+            },
+            Err(_) => {break}
         }
     }
     for (_i, t) in polling_threads.into_iter().enumerate() {
         let _ = t.join();
     }
-
     Ok(())
 }
+
 
 fn spawn_process(command: &str, args: &Vec<&str>) -> Child {
     let res: Child = Command::new(command)
