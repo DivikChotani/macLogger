@@ -50,7 +50,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
 
     let net = if opt.network {
-        let temp = spawn_process("tcpdump", &vec!["-i", "en0", "-l", "-n"]);
+        let temp = spawn_process("tcpdump", &vec!["-i", "en0", "-n", "-l", "-tttt", "-vvv", "-q"]);
         // temp.wait();
         Some(temp)
     } else {
@@ -104,14 +104,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         match r.recv() {
             Ok((cmd, mes)) => {
                 let mes = mes.trim();
-                handle_fs(&mes);
-                // handle_sys(&mes);
-
-                // let json_out = match cmd {
-                //     LogType::Sys => handle_sys(&mes),
-                    
-                // }
-                //println!("{mes}");
+                handle_net(&mes);
             },
             Err(_) => {break}
         }
@@ -122,12 +115,28 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn handle_sys(log: &str) -> Value{
-    from_str::<serde_json::Value>(log).expect("could not jsonize")
+fn handle_sys(log: &str) -> Option<Value>{
+    (from_str::<serde_json::Value>(log)).ok()
 }
 
+fn handle_net(log: &str) -> Option<Value>{
+    let re = Regex::new("(ARP|IP)").unwrap();
+    let mut network = Network::default();
+    if let Some(caps) = re.captures(log) {
+        match &caps[1] {
+            "IP" => {
+                network.req_type = ArpIp::Ip(IP::default());
+            },
+            "ARP" => {    
+                network.req_type = ArpIp::Arp(ARP::default());
+            },
+            &_ => {println!("Other")}
+        }
+    }
+    println!("{log}");
+    None
+}
 fn handle_fs(log: &str) -> Option<Value>{
-
     //get time
     let mut fs = FsHandler::default();
     let re = Regex::new(r"^([\w\.:]+)\s+([\w\.:]+).*?([0-9\.]+)\s+*\s+([\w\.:]+)$").unwrap();
@@ -192,17 +201,33 @@ struct FsHandler {
     pid: i32
 }
 
-// impl FsHandler {
-//     fn new() -> FsHandler {
-//         let e = "".to_string();
-//         FsHandler {
-//             time: e.clone(),
-//             event_type: e.clone(),
-//             file_path: e.clone(),
-//             duration: 0.0,
-//             p_name: e.clone(),
-//             pid:0
+#[derive(Default)]
+enum ArpIp {
+    Arp(ARP),
+    Ip(IP),
+    #[default]
+    None,
+}
 
-//         }
-//     }
-// }
+#[derive(Default)]
+struct Network {
+    time: String,
+    len: i32,
+    req_type: ArpIp,
+    req_type_str: String
+}
+
+#[derive(Default)]
+struct ARP {
+    connect_type: String,
+    who_has: String,
+    tell: String
+}
+
+#[derive(Default)]
+struct IP {
+    proto: String,
+    payload_len: i32,
+    source: (String, String),
+    dest: (String, String)
+}
