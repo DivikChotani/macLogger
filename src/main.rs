@@ -129,21 +129,17 @@ fn handle_sys(log: &str) -> Value{
 fn handle_fs(log: &str){
 
     //get time
-    let raw_time = Regex::new(r"^([\.:0-9]+)").unwrap();
-    let Some(time) = raw_time.captures(log) else {
-        return
-    };
-    let time = &time[0];
-    
-    let name_id = Regex::new(r"[\w\.]+$").unwrap();
-    let Some(nameid) = name_id.captures(log) else {
-        return
-    };
-    let nameid = &nameid[0];
-    let list: Vec<&str> = nameid.split(".").collect();
-    let p_name = list[0].to_string();
-    let pid = list[list.len()-1].to_string();
-    println!("{nameid}");
+    let re = Regex::new(r"^([\w\.:]+)\s+([\w\.:]+).*?([\w\.:]+)\s+([\w\.:]+)$").unwrap();
+    if let Some(caps) = re.captures(log) {
+        let time_stamp  = &caps[1];  // 1st word
+        let event = &caps[2];  // 2nd word
+        let duration = &caps[3];  // 2nd‑to‑last word
+        let  nameid = &caps[4];  // last word
+        let a: Vec<&str> = nameid.split(".").collect();
+        let p_name = a[0].to_string();
+        let pid = a[1].to_string();
+        println!("{log}")
+    }
 
 }
 
