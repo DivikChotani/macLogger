@@ -13,7 +13,7 @@ use serde_json::{from_str, Result as JsonResult, Value};
 use serde_json::json;
 use crossbeam_channel::unbounded;
 use regex::Regex;
-use serde::{Deserialize, Serialize};
+use serde::{de::value, Deserialize, Serialize};
 
 
 #[derive(Debug, Clone, Copy)]
@@ -126,21 +126,36 @@ fn handle_sys(log: &str) -> Value{
     from_str::<serde_json::Value>(log).expect("could not jsonize")
 }
 
-fn handle_fs(log: &str){
+fn handle_fs(log: &str) -> Option<Value>{
 
     //get time
-    let re = Regex::new(r"^([\w\.:]+)\s+([\w\.:]+).*?([\w\.:]+)\s+([\w\.:]+)$").unwrap();
+    let mut fs = FsHandler::default();
+    let re = Regex::new(r"^([\w\.:]+)\s+([\w\.:]+).*?([0-9\.]+)\s+*\s+([\w\.:]+)$").unwrap();
     if let Some(caps) = re.captures(log) {
-        let time_stamp  = &caps[1];  // 1st word
-        let event = &caps[2];  // 2nd word
-        let duration = &caps[3];  // 2nd‑to‑last word
+        fs.time  = (&caps[1]).to_string();  // 1st word
+        fs.event_type = (&caps[2]).to_string();  // 2nd word
+        fs.duration = (&caps[3]).to_string().parse().unwrap();  // 2nd‑to‑last word
         let  nameid = &caps[4];  // last word
+        println!("{nameid}");
         let a: Vec<&str> = nameid.split(".").collect();
-        let p_name = a[0].to_string();
-        let pid = a[1].to_string();
-        println!("{log}")
+        fs.p_name = a[0].to_string();
+        fs.pid = a[1].to_string().parse().unwrap();
+        
+    } else{
+        return None
     }
 
+    let re = Regex::new(r"(\S+/\S+)").unwrap();
+
+    let f = re
+                    .find_iter(log)
+                    .map(|m| m.as_str())
+                    .collect::<Vec<&str>>()
+                    .join(" ");
+    fs.file_path = f;
+    // println!("{fs:#?}");
+    // println!("file name {}", fs.file_path);
+    Some(serde_json::to_value(&fs).unwrap())
 }
 
 fn spawn_process(command: &str, args: &Vec<&str>) -> Child {
@@ -167,7 +182,7 @@ struct Opt {
     network: bool,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 struct FsHandler {
     time: String,
     event_type: String,
@@ -176,3 +191,18 @@ struct FsHandler {
     p_name: String,
     pid: i32
 }
+
+// impl FsHandler {
+//     fn new() -> FsHandler {
+//         let e = "".to_string();
+//         FsHandler {
+//             time: e.clone(),
+//             event_type: e.clone(),
+//             file_path: e.clone(),
+//             duration: 0.0,
+//             p_name: e.clone(),
+//             pid:0
+
+//         }
+//     }
+// }
