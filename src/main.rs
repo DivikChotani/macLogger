@@ -120,15 +120,33 @@ fn handle_sys(log: &str) -> Option<Value>{
 }
 
 fn handle_net(log: &str) -> Option<Value>{
-    let re = Regex::new("(ARP|IP)").unwrap();
     let mut network = Network::default();
+
+    let re = Regex::new("(ARP|IP)").unwrap();
+    let get_len = Regex::new(r"\blength[: ]+(\d+)\b").unwrap();
+    if let Some(len) = get_len.captures(log) {
+        let temp = &len[1];
+        network.len = temp.trim().parse().unwrap();
+    }
+
+    let time_stamp = Regex::new(r"^([0-9\.\-\/]+)\s+([0-9\.\-:]+)").unwrap();
+    if let Some(times) = time_stamp.captures(log) {
+        let a = &times[1];
+        let b = &times[2];
+        network.time = a.to_owned()+b;
+    }
     if let Some(caps) = re.captures(log) {
         match &caps[1] {
             "IP" => {
+                
                 network.req_type = ArpIp::Ip(IP::default());
+                network.req_type_str = "Ip".to_string();
             },
-            "ARP" => {    
+            "ARP" => {
+
                 network.req_type = ArpIp::Arp(ARP::default());
+                network.req_type_str = "Arp".to_string();
+
             },
             &_ => {println!("Other")}
         }
