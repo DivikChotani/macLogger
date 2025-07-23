@@ -118,50 +118,88 @@ fn main() -> Result<(), Box<dyn Error>> {
 fn handle_sys(log: &str) -> Option<Value>{
     (from_str::<serde_json::Value>(log)).ok()
 }
+struct NetParsing {
+    prev: Option<Network>
+}
 
-fn handle_net(log: &str) -> Option<Value>{
-    let mut network = Network::default();
-
-    let re = Regex::new("(ARP|IP)").unwrap();
-    let get_len = Regex::new(r"\blength[: ]+(\d+)\b").unwrap();
-    if let Some(len) = get_len.captures(log) {
-        let temp = &len[1];
-        network.len = temp.trim().parse().unwrap();
-    }
-
-    let time_stamp = Regex::new(r"^([0-9\.\-\/]+)\s+([0-9\.\-:]+)").unwrap();
-    if let Some(times) = time_stamp.captures(log) {
-        let a = &times[1];
-        let b = &times[2];
-        network.time = a.to_owned()+b;
-    }
-    if let Some(caps) = re.captures(log) {
-        match &caps[1] {
-            "IP" => {
-                
-                network.req_type = ArpIp::Ip(IP::default());
-                network.req_type_str = "Ip".to_string();
-                println!("{log}");
-
-                let re = Regex::new(r"\bproto\s+(?<proto>\w+)").unwrap();
-                if let Some(caps) = re.captures(log) {
-                    match network.req_type {
-                        ArpIp::Ip(mut ip) => {ip.proto = (&caps["proto"]).to_owned()},
-                        _ => {},
-                    }
-                }
-
-            },
-            "ARP" => {
-
-                network.req_type = ArpIp::Arp(ARP::default());
-                network.req_type_str = "Arp".to_string();
-
-            },
-            &_ => {println!("Other")}
+impl NetParsing  {
+    fn new() -> NetParsing{
+        NetParsing {
+            prev: None
         }
     }
-    None
+
+    fn handle_net(self, log: &str) -> Option<Value>{
+        if let Some(prev) = self.prev {
+            let re = Regex::new(r"^([0-9\.:]+)\s+>\s+([0-9\.:]+).*([0-9]+)$").unwrap();
+            if let Some(caps) = re.captures(log) {
+                prev.payload_len = 
+            }
+        }
+        let mut network = Network::default();
+
+        let re = Regex::new("(ARP|IP)").unwrap();
+        let get_len = Regex::new(r"\blength[: ]+(\d+)\b").unwrap();
+        if let Some(len) = get_len.captures(log) {
+            let temp = &len[1];
+            network.len = temp.trim().parse().unwrap();
+        }
+
+        let time_stamp = Regex::new(r"^([0-9\.\-\/]+)\s+([0-9\.\-:]+)").unwrap();
+        if let Some(times) = time_stamp.captures(log) {
+            let a = &times[1];
+            let b = &times[2];
+            network.time = a.to_owned()+b;
+        }
+        if let Some(caps) = re.captures(log) {
+            match &caps[1] {
+                "IP" => {
+                    network.req_type = ArpIp::Ip(IP::default());
+                    network.req_type_str = "Ip".to_string();
+                    
+
+                    let re = Regex::new(r"\bproto\s+(?<proto>\w+)").unwrap();
+                    if let Some(caps) = re.captures(log) {
+                        match network.req_type {
+                            ArpIp::Ip(ref mut ip) => {ip.proto = (&caps["proto"]).to_owned()},
+                            _ => {},
+                        }
+                    }
+
+                },
+                "ARP" => {
+
+                    network.req_type = ArpIp::Arp(ARP::default());
+                    network.req_type_str = "Arp".to_string();
+                    
+                    let re = Regex::new(r"\bARP,\s+(?P<type>\w+)").unwrap();
+                    let has_re = Regex::new(r"\bwho-has\s+(?P<who_has>[\w\.:]+)").unwrap();
+                    let tell_re = Regex::new(r"\btell\s+(?P<tell>[\w\.:]+)").unwrap();
+
+                    let caps = re.captures(log);
+                    let has_caps = has_re.captures(log);
+                    let tell_caps = tell_re.captures(log);
+
+                    if let (Some(caps), Some(has), Some(tell)) = (caps, has_caps, tell_caps)
+                    {
+                        match network.req_type {
+                            ArpIp::Arp(ref mut arp) => {
+                                arp.connect_type = (&caps["type"]).to_owned();
+                                arp.tell = (&tell["tell"]).to_owned();
+                                arp.who_has = (&has["who_has"]).to_owned()
+                            },
+                            _ => {},
+                        }
+                    }
+
+                },
+                &_ => {println!("Other")}
+            }
+        }
+        println!("{log}");
+        println!("{network:#?}");
+        None
+    }
 }
 fn handle_fs(log: &str) -> Option<Value>{
     //get time
@@ -228,7 +266,7 @@ struct FsHandler {
     pid: i32
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 enum ArpIp {
     Arp(ARP),
     Ip(IP),
@@ -236,7 +274,7 @@ enum ArpIp {
     None,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct Network {
     time: String,
     len: i32,
@@ -244,17 +282,17 @@ struct Network {
     req_type_str: String
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct ARP {
     connect_type: String,
     who_has: String,
     tell: String
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct IP {
     proto: String,
     payload_len: i32,
-    source: (String, String),
-    dest: (String, String)
+    source: String,
+    dest: String,
 }
