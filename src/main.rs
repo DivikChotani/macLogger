@@ -141,6 +141,16 @@ fn handle_net(log: &str) -> Option<Value>{
                 
                 network.req_type = ArpIp::Ip(IP::default());
                 network.req_type_str = "Ip".to_string();
+                println!("{log}");
+
+                let re = Regex::new(r"\bproto\s+(?<proto>\w+)").unwrap();
+                if let Some(caps) = re.captures(log) {
+                    match network.req_type {
+                        ArpIp::Ip(mut ip) => {ip.proto = (&caps["proto"]).to_owned()},
+                        _ => {},
+                    }
+                }
+
             },
             "ARP" => {
 
@@ -151,7 +161,6 @@ fn handle_net(log: &str) -> Option<Value>{
             &_ => {println!("Other")}
         }
     }
-    println!("{log}");
     None
 }
 fn handle_fs(log: &str) -> Option<Value>{
