@@ -109,7 +109,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                     LogType::Sys => handle_sys(&mes),
                     LogType::Net => networkHandler.handle_net(&mes),
                 };
-                if le
+
+                match log {
+                    Some(val) => println!("{val:#?}"),
+                    _ =>{}
+                }
                 
             },
             Err(_) => {break}
@@ -224,8 +228,11 @@ impl NetParsing  {
 fn handle_fs(log: &str) -> Option<Value>{
     //get time
     let mut fs = FsHandler::default();
-    let re = Regex::new(r"^([\w\.:]+)\s+([\w\.:]+).*?([0-9\.]+)\s+*\s+([\w\.:]+)$").unwrap();
+    let re = Regex::new(
+        r"(?m)^\s*(\S+)\s+(\S+)\s+.*?\s+(\d+\.\d+)\s+(.+)$"
+    ).unwrap();
     if let Some(caps) = re.captures(log) {
+        println!("{caps:#?}");
         fs.time  = (&caps[1]).to_string();  // 1st word
         fs.event_type = (&caps[2]).to_string();  // 2nd word
         fs.duration = (&caps[3]).to_string().parse().unwrap();  // 2nd‑to‑last word
@@ -247,7 +254,6 @@ fn handle_fs(log: &str) -> Option<Value>{
                     .collect::<Vec<&str>>()
                     .join(" ");
     fs.file_path = f;
-    // println!("{fs:#?}");
     // println!("file name {}", fs.file_path);
     Some(serde_json::to_value(&fs).unwrap())
 }
