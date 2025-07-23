@@ -1,21 +1,42 @@
 use nix::libc::getuid;
-use signal_hook::consts::{SIGINT, SIGTERM};
+use signal_hook::{flag, consts::{SIGINT, SIGTERM}};
 use std::{
-    any::type_name, error::Error, io::{BufRead, BufReader}, process::{Child, Command, Stdio}, thread::JoinHandle
+    error::Error,
+    io::{BufRead, BufReader},
+    process::{Child, Command, Stdio},
+    thread::JoinHandle,
+    thread,
+    sync::{Arc, atomic::AtomicBool}
 };
-
-use signal_hook::flag;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use std::thread;
-use structopt::StructOpt;
-use serde_json::{from_str, Result as JsonResult, Value};
-use serde_json::json;
 use crossbeam_channel::unbounded;
 use regex::Regex;
-use serde::{de::value, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, from_str};
+use structopt::StructOpt;
+use lazy_static::lazy_static;
 
 
+lazy_static! {
+
+    //network handling regex
+    static ref NEWTORK_LINE_TWO:Regex = Regex::new(
+                r"^\s*(?P<src>(?:\d{1,3}\.){4}\d+)\s*>\s*(?P<dst>(?:\d{1,3}\.){4}\d+):.+?(?P<len>\d+)\s*$"
+            ).unwrap();
+    static ref ARP_IP:Regex = Regex::new("(ARP|IP)").unwrap();
+    static ref PACKET_LEN: Regex = Regex::new(r"\blength[: ]+(\d+)\b").unwrap();
+    static ref TIME_STAMP: Regex = Regex::new(r"^([0-9\.\-\/]+)\s+([0-9\.\-:]+)").unwrap();
+    static ref PROTO: Regex = Regex::new(r"\bproto\s+(?<proto>\w+)").unwrap();
+
+    static ref TYPE: Regex = Regex::new(r"\bARP,\s+(?P<type>\w+)").unwrap();
+    static ref WHO_HAS: Regex = Regex::new(r"\bwho-has\s+(?P<who_has>[\w\.:]+)").unwrap();
+    static ref TELL: Regex = Regex::new(r"\btell\s+(?P<tell>[\w\.:]+)").unwrap();
+
+    //filesystem handling regex
+    static ref FILE_SYS_REG:Regex = Regex::new(r"(?m)^\s*(\S+)\s+(\S+)\s+.*?\s+(\d+\.\d+)\s+(.+)$").unwrap();
+    static ref FILE_PATHS: Regex = Regex::new(r"(\S+/\S+)").unwrap();
+
+
+}
 #[derive(Debug, Clone, Copy)]
 enum LogType {
     Sys,
@@ -32,7 +53,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     if !(opt.files || opt.network || opt.system) {
         return Err("You must at least pass one flag to output logs, use -h for help".into());
     }
-    let mut networkHandler = NetParsing::new();
+    let mut network_handler = NetParsing::new();
 
     //create the subprocess
     let sys = if opt.system {
@@ -44,15 +65,16 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let fs = if opt.files {
         let temp = spawn_process("fs_usage", &vec!["-w", "-f", "filesys"]);
-        // temp.wait();
         Some(temp)
     } else {
         None
     };
 
     let net = if opt.network {
-        let temp = spawn_process("tcpdump", &vec!["-i", "en0", "-n", "-l", "-tttt", "-vvv", "-q"]);
-        // temp.wait();
+        let temp = spawn_process(
+            "tcpdump",
+            &vec!["-i", "en0", "-n", "-l", "-tttt", "-vvv", "-q"],
+        );
         Some(temp)
     } else {
         None
@@ -109,15 +131,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let log = match cmd {
                     LogType::Fs => handle_fs(&mes),
                     LogType::Sys => handle_sys(&mes),
-                    LogType::Net => networkHandler.handle_net(&mes),
+                    LogType::Net => network_handler.handle_net(&mes),
                 };
                 match log {
                     Some(val) => println!("{val:#?}"),
-                    _ =>{}
+                    _ => {}
                 }
-                
-            },
-            Err(_) => {break}
+            }
+            Err(_) => break,
         }
     }
     for (_i, t) in polling_threads.into_iter().enumerate() {
@@ -126,32 +147,28 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn handle_sys(log: &str) -> Option<Value>{
+fn handle_sys(log: &str) -> Option<Value> {
     (from_str::<serde_json::Value>(log)).ok()
 }
 struct NetParsing {
-    prev: Option<Network>
+    prev: Option<Network>,
 }
 
-impl NetParsing  {
-    fn new() -> NetParsing{
-        NetParsing {
-            prev: None
-        }
+impl NetParsing {
+    fn new() -> NetParsing {
+        NetParsing { prev: None }
     }
 
-    fn handle_net(&mut self, log: &str) -> Option<Value>{
+    fn handle_net(&mut self, log: &str) -> Option<Value> {
         if let Some(ref mut prev) = self.prev.take() {
-            let re = Regex::new(
-                r"^\s*(?P<src>(?:\d{1,3}\.){4}\d+)\s*>\s*(?P<dst>(?:\d{1,3}\.){4}\d+):.+?(?P<len>\d+)\s*$"
-            ).unwrap();
+            
 
             let line = log.trim();
 
-            if let Some(caps) = re.captures(line) {
+            if let Some(caps) = NEWTORK_LINE_TWO.captures(line) {
                 if let ArpIp::Ip(ref mut ip) = prev.req_type {
-                    ip.source      = caps["src"].to_string();
-                    ip.dest        = caps["dst"].to_string();
+                    ip.source = caps["src"].to_string();
+                    ip.dest = caps["dst"].to_string();
                     ip.payload_len = caps["len"].parse().unwrap();
                 }
             }
@@ -160,97 +177,80 @@ impl NetParsing  {
         }
         let mut network = Network::default();
 
-        let re = Regex::new("(ARP|IP)").unwrap();
-        let get_len = Regex::new(r"\blength[: ]+(\d+)\b").unwrap();
-        if let Some(len) = get_len.captures(log) {
+        if let Some(len) = PACKET_LEN.captures(log) {
             let temp = &len[1];
             network.len = temp.trim().parse().unwrap();
         }
 
-        let time_stamp = Regex::new(r"^([0-9\.\-\/]+)\s+([0-9\.\-:]+)").unwrap();
-        if let Some(times) = time_stamp.captures(log) {
+        if let Some(times) = TIME_STAMP.captures(log) {
             let a = &times[1];
             let b = &times[2];
-            network.time = a.to_owned()+" "+b;
+            network.time = a.to_owned() + " " + b;
         }
-        if let Some(caps) = re.captures(log) {
+        if let Some(caps) = ARP_IP.captures(log) {
             match &caps[1] {
                 "IP" => {
                     network.req_type = ArpIp::Ip(IP::default());
                     network.req_type_str = "Ip".to_string();
-                    
 
-                    let re = Regex::new(r"\bproto\s+(?<proto>\w+)").unwrap();
-                    if let Some(caps) = re.captures(log) {
+                    if let Some(caps) = PROTO.captures(log) {
                         match network.req_type {
-                            ArpIp::Ip(ref mut ip) => {ip.proto = (&caps["proto"]).to_owned()},
-                            _ => {},
+                            ArpIp::Ip(ref mut ip) => ip.proto = (&caps["proto"]).to_owned(),
+                            _ => {}
                         }
                     }
                     self.prev = Some(network);
                     return None;
-                },
+                }
                 "ARP" => {
-
                     network.req_type = ArpIp::Arp(ARP::default());
                     network.req_type_str = "Arp".to_string();
-                    
-                    let re = Regex::new(r"\bARP,\s+(?P<type>\w+)").unwrap();
-                    let has_re = Regex::new(r"\bwho-has\s+(?P<who_has>[\w\.:]+)").unwrap();
-                    let tell_re = Regex::new(r"\btell\s+(?P<tell>[\w\.:]+)").unwrap();
 
-                    let caps = re.captures(log);
-                    let has_caps = has_re.captures(log);
-                    let tell_caps = tell_re.captures(log);
 
-                    if let (Some(caps), Some(has), Some(tell)) = (caps, has_caps, tell_caps)
-                    {
+                    let caps = TYPE.captures(log);
+                    let has_caps = WHO_HAS.captures(log);
+                    let tell_caps = TELL.captures(log);
+
+                    if let (Some(caps), Some(has), Some(tell)) = (caps, has_caps, tell_caps) {
                         match network.req_type {
                             ArpIp::Arp(ref mut arp) => {
                                 arp.connect_type = (&caps["type"]).to_owned();
                                 arp.tell = (&tell["tell"]).to_owned();
                                 arp.who_has = (&has["who_has"]).to_owned()
-                            },
-                            _ => {},
+                            }
+                            _ => {}
                         }
-                        
                     }
-                    return Some(serde_json::to_value(network).unwrap())
-
-                },
+                    return Some(serde_json::to_value(network).unwrap());
+                }
                 &_ => {}
             }
         }
-        
+
         None
     }
 }
-fn handle_fs(log: &str) -> Option<Value>{
+fn handle_fs(log: &str) -> Option<Value> {
     //get time
     let mut fs = FsHandler::default();
-    let re = Regex::new(
-        r"(?m)^\s*(\S+)\s+(\S+)\s+.*?\s+(\d+\.\d+)\s+(.+)$"
-    ).unwrap();
-    if let Some(caps) = re.captures(log) {
-        fs.time  = (&caps[1]).to_string();  // 1st word
-        fs.event_type = (&caps[2]).to_string();  // 2nd word
-        fs.duration = (&caps[3]).to_string().parse().unwrap();  // 2nd‑to‑last word
-        let  nameid = &caps[4];  // last word
+    if let Some(caps) = FILE_SYS_REG.captures(log) {
+        fs.time = (&caps[1]).to_string(); // 1st word
+        fs.event_type = (&caps[2]).to_string(); // 2nd word
+        fs.duration = (&caps[3]).to_string().parse().unwrap(); // 2nd‑to‑last word
+        let nameid = &caps[4]; // last word
         let a: Vec<&str> = nameid.split(".").collect();
         fs.p_name = a[0].to_string();
         fs.pid = a[1].to_string().parse().unwrap();
-        
-    } else{
-        return None
+    } else {
+        return None;
     }
 
-    let re = Regex::new(r"(\S+/\S+)").unwrap();
 
-    let f = re
-                    .find_iter(log)
-                    .map(|m| m.as_str())
-                    .collect::<Vec<&str>>()
-                    .join(" ");
+    let f = FILE_PATHS
+        .find_iter(log)
+        .map(|m| m.as_str())
+        .collect::<Vec<&str>>()
+        .join(" ");
     fs.file_path = f;
     Some(serde_json::to_value(&fs).unwrap())
 }
@@ -286,10 +286,10 @@ struct FsHandler {
     file_path: String,
     duration: f64,
     p_name: String,
-    pid: i32
+    pid: i32,
 }
 
-#[derive(Default, Debug, Serialize, Deserialize,)]
+#[derive(Default, Debug, Serialize, Deserialize)]
 enum ArpIp {
     Arp(ARP),
     Ip(IP),
@@ -297,22 +297,22 @@ enum ArpIp {
     None,
 }
 
-#[derive(Default, Debug, Serialize, Deserialize,)]
+#[derive(Default, Debug, Serialize, Deserialize)]
 struct Network {
     time: String,
     len: i32,
     req_type: ArpIp,
-    req_type_str: String
+    req_type_str: String,
 }
 
-#[derive(Default, Debug, Serialize, Deserialize,)]
+#[derive(Default, Debug, Serialize, Deserialize)]
 struct ARP {
     connect_type: String,
     who_has: String,
-    tell: String
+    tell: String,
 }
 
-#[derive(Default, Debug, Serialize, Deserialize,)]
+#[derive(Default, Debug, Serialize, Deserialize)]
 struct IP {
     proto: String,
     payload_len: i32,
