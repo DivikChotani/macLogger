@@ -104,12 +104,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     while !term.load(std::sync::atomic::Ordering::Relaxed) {
         match r.recv() {
             Ok((cmd, mes)) => {
+                println!("{mes}");
+
                 let log = match cmd {
                     LogType::Fs => handle_fs(&mes),
                     LogType::Sys => handle_sys(&mes),
                     LogType::Net => networkHandler.handle_net(&mes),
                 };
-
                 match log {
                     Some(val) => println!("{val:#?}"),
                     _ =>{}
@@ -140,22 +141,22 @@ impl NetParsing  {
     }
 
     fn handle_net(&mut self, log: &str) -> Option<Value>{
-        // println!("{log}");
         if let Some(ref mut prev) = self.prev.take() {
-            let re = Regex::new(r"^([0-9\.:]+)\s+>\s+([0-9\.:]+).*?([0-9]+)$").unwrap();
-            if let Some(caps) = re.captures(log) {
-                println!("{caps:#?}");
-                match prev.req_type {
-                    ArpIp::Ip(ref mut ip) => {
-                        ip.payload_len = (&caps[3]).trim().parse().unwrap();
-                        ip.dest = (&caps[2]).trim().to_owned();
-                        ip.source = (&caps[1]).trim().to_owned();
-                    }
-                    _ => {}
+            let re = Regex::new(
+                r"^\s*(?P<src>(?:\d{1,3}\.){4}\d+)\s*>\s*(?P<dst>(?:\d{1,3}\.){4}\d+):.+?(?P<len>\d+)\s*$"
+            ).unwrap();
+
+            let line = log.trim();
+
+            if let Some(caps) = re.captures(line) {
+                if let ArpIp::Ip(ref mut ip) = prev.req_type {
+                    ip.source      = caps["src"].to_string();
+                    ip.dest        = caps["dst"].to_string();
+                    ip.payload_len = caps["len"].parse().unwrap();
                 }
             }
-            println!("{prev:#?}");
-            return Some(serde_json::to_value(prev).unwrap())
+
+            return Some(serde_json::to_value(prev).unwrap());
         }
         let mut network = Network::default();
 
@@ -214,11 +215,10 @@ impl NetParsing  {
                         }
                         
                     }
-                    println!("{network:#?}");
                     return Some(serde_json::to_value(network).unwrap())
 
                 },
-                &_ => {println!("Other")}
+                &_ => {}
             }
         }
         
@@ -232,12 +232,10 @@ fn handle_fs(log: &str) -> Option<Value>{
         r"(?m)^\s*(\S+)\s+(\S+)\s+.*?\s+(\d+\.\d+)\s+(.+)$"
     ).unwrap();
     if let Some(caps) = re.captures(log) {
-        println!("{caps:#?}");
         fs.time  = (&caps[1]).to_string();  // 1st word
         fs.event_type = (&caps[2]).to_string();  // 2nd word
         fs.duration = (&caps[3]).to_string().parse().unwrap();  // 2nd‑to‑last word
         let  nameid = &caps[4];  // last word
-        println!("{nameid}");
         let a: Vec<&str> = nameid.split(".").collect();
         fs.p_name = a[0].to_string();
         fs.pid = a[1].to_string().parse().unwrap();
@@ -254,7 +252,6 @@ fn handle_fs(log: &str) -> Option<Value>{
                     .collect::<Vec<&str>>()
                     .join(" ");
     fs.file_path = f;
-    // println!("file name {}", fs.file_path);
     Some(serde_json::to_value(&fs).unwrap())
 }
 
