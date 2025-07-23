@@ -32,6 +32,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     if !(opt.files || opt.network || opt.system) {
         return Err("You must at least pass one flag to output logs, use -h for help".into());
     }
+    let mut networkHandler = NetParsing::new();
 
     //create the subprocess
     let sys = if opt.system {
@@ -103,8 +104,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     while !term.load(std::sync::atomic::Ordering::Relaxed) {
         match r.recv() {
             Ok((cmd, mes)) => {
-                let mes = mes.trim();
-                handle_net(&mes);
+                let log = match cmd {
+                    LogType::Fs => handle_fs(&mes),
+                    LogType::Sys => handle_sys(&mes),
+                    LogType::Net => networkHandler.handle_net(&mes),
+                };
+                if le
+                
             },
             Err(_) => {break}
         }
@@ -129,12 +135,23 @@ impl NetParsing  {
         }
     }
 
-    fn handle_net(self, log: &str) -> Option<Value>{
-        if let Some(prev) = self.prev {
-            let re = Regex::new(r"^([0-9\.:]+)\s+>\s+([0-9\.:]+).*([0-9]+)$").unwrap();
+    fn handle_net(&mut self, log: &str) -> Option<Value>{
+        // println!("{log}");
+        if let Some(ref mut prev) = self.prev.take() {
+            let re = Regex::new(r"^([0-9\.:]+)\s+>\s+([0-9\.:]+).*?([0-9]+)$").unwrap();
             if let Some(caps) = re.captures(log) {
-                prev.payload_len = 
+                println!("{caps:#?}");
+                match prev.req_type {
+                    ArpIp::Ip(ref mut ip) => {
+                        ip.payload_len = (&caps[3]).trim().parse().unwrap();
+                        ip.dest = (&caps[2]).trim().to_owned();
+                        ip.source = (&caps[1]).trim().to_owned();
+                    }
+                    _ => {}
+                }
             }
+            println!("{prev:#?}");
+            return Some(serde_json::to_value(prev).unwrap())
         }
         let mut network = Network::default();
 
@@ -149,7 +166,7 @@ impl NetParsing  {
         if let Some(times) = time_stamp.captures(log) {
             let a = &times[1];
             let b = &times[2];
-            network.time = a.to_owned()+b;
+            network.time = a.to_owned()+" "+b;
         }
         if let Some(caps) = re.captures(log) {
             match &caps[1] {
@@ -165,7 +182,8 @@ impl NetParsing  {
                             _ => {},
                         }
                     }
-
+                    self.prev = Some(network);
+                    return None;
                 },
                 "ARP" => {
 
@@ -190,14 +208,16 @@ impl NetParsing  {
                             },
                             _ => {},
                         }
+                        
                     }
+                    println!("{network:#?}");
+                    return Some(serde_json::to_value(network).unwrap())
 
                 },
                 &_ => {println!("Other")}
             }
         }
-        println!("{log}");
-        println!("{network:#?}");
+        
         None
     }
 }
@@ -266,7 +286,7 @@ struct FsHandler {
     pid: i32
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Serialize, Deserialize,)]
 enum ArpIp {
     Arp(ARP),
     Ip(IP),
@@ -274,7 +294,7 @@ enum ArpIp {
     None,
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Serialize, Deserialize,)]
 struct Network {
     time: String,
     len: i32,
@@ -282,14 +302,14 @@ struct Network {
     req_type_str: String
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Serialize, Deserialize,)]
 struct ARP {
     connect_type: String,
     who_has: String,
     tell: String
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Serialize, Deserialize,)]
 struct IP {
     proto: String,
     payload_len: i32,
