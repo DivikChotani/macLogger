@@ -1,24 +1,27 @@
+use crossbeam_channel::unbounded;
+use lazy_static::lazy_static;
 use nix::libc::getuid;
-use signal_hook::{flag, consts::{SIGINT, SIGTERM}};
+use opentelemetry::{KeyValue, global};
+use opentelemetry_sdk::Resource;
+use opentelemetry_sdk::metrics::SdkMeterProvider;
+use opentelemetry_stdout;
+use regex::Regex;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, from_str};
+use signal_hook::{
+    consts::{SIGINT, SIGTERM},
+    flag,
+};
 use std::{
     error::Error,
     io::{BufRead, BufReader},
     process::{Child, Command, Stdio},
-    thread::JoinHandle,
-    thread,
     sync::{Arc, atomic::AtomicBool},
-    time::Instant
+    thread,
+    thread::JoinHandle,
+    time::Instant,
 };
-use crossbeam_channel::unbounded;
-use regex::Regex;
-use serde::{Deserialize, Serialize};
-use serde_json::{Value, from_str};
 use structopt::StructOpt;
-use lazy_static::lazy_static;
-use opentelemetry::{global, KeyValue};
-use opentelemetry_sdk::metrics::SdkMeterProvider;
-use opentelemetry_sdk::Resource;
-use opentelemetry_stdout;
 lazy_static! {
 
     //network handling regex
@@ -64,42 +67,38 @@ fn init_meter_provider() -> opentelemetry_sdk::metrics::SdkMeterProvider {
     provider
 }
 fn main() -> Result<(), Box<dyn Error>> {
-
     let meter_provider = init_meter_provider();
 
-    
     let meter = global::meter("service");
-    let counter = meter
-        .u64_counter("log_tracer")
-        .build();
+    let counter = meter.u64_counter("log_tracer").build();
 
     let hist = meter
         .f64_histogram("total_counts")
         .with_description("My histogram example description")
         .with_boundaries(vec![
-    0.000015,  // 15 µs
-    0.00002,   // 20 µs
-    0.000025,  // 25 µs
-    0.00003,   // 30 µs
-    0.000035,  // 35 µs
-    0.00004,   // 40 µs
-    0.000045,  // 45 µs
-    0.00005,   // 50 µs
-    0.00006,   // 60 µs
-    0.00007,   // 70 µs
-    0.00008,   // 80 µs
-    0.00009,   // 90 µs
-    0.0001,    // 100 µs
-    0.000125,  // 125 µs
-    0.00015,   // 150 µs
-    0.0002,    // 200 µs
-    0.0003,    // 300 µs
-    0.0005,    // 500 µs
-    0.001,     // 1 ms
-    0.002,     // 2 ms
-    0.005,     // 5 ms
-    0.01       // 10 ms
-])
+            0.000015, // 15 µs
+            0.00002,  // 20 µs
+            0.000025, // 25 µs
+            0.00003,  // 30 µs
+            0.000035, // 35 µs
+            0.00004,  // 40 µs
+            0.000045, // 45 µs
+            0.00005,  // 50 µs
+            0.00006,  // 60 µs
+            0.00007,  // 70 µs
+            0.00008,  // 80 µs
+            0.00009,  // 90 µs
+            0.0001,   // 100 µs
+            0.000125, // 125 µs
+            0.00015,  // 150 µs
+            0.0002,   // 200 µs
+            0.0003,   // 300 µs
+            0.0005,   // 500 µs
+            0.001,    // 1 ms
+            0.002,    // 2 ms
+            0.005,    // 5 ms
+            0.01,     // 10 ms
+        ])
         .build();
 
     let opt = Opt::from_args();
@@ -143,7 +142,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let fs_label = KeyValue::new("fs", "total count");
     let sys_label = KeyValue::new("sys", "total count");
     let net_label = KeyValue::new("net", "total count");
-    let child_ps = vec![(LogType::Sys, sys, fs_label), (LogType::Fs, fs, sys_label), (LogType::Net, net, net_label)];
+    let child_ps = vec![
+        (LogType::Sys, sys, fs_label),
+        (LogType::Fs, fs, sys_label),
+        (LogType::Net, net, net_label),
+    ];
 
     let term = Arc::new(AtomicBool::new(false));
 
@@ -198,9 +201,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
                 let elapsed_time = now.elapsed();
 
-                let Some(log) = log else {
-                    continue
-                };
+                let Some(log) = log else { continue };
                 counter.add(1, &[label.clone()]);
                 hist.record(elapsed_time.as_secs_f64(), &[label]);
             }
@@ -229,8 +230,6 @@ impl NetParsing {
 
     fn handle_net(&mut self, log: &str) -> Option<Value> {
         if let Some(ref mut prev) = self.prev.take() {
-            
-
             let line = log.trim();
 
             if let Some(caps) = NEWTORK_LINE_TWO.captures(line) {
@@ -274,7 +273,6 @@ impl NetParsing {
                     network.req_type = ArpIp::Arp(ARP::default());
                     network.req_type_str = "Arp".to_string();
 
-
                     let caps = TYPE.captures(log);
                     let has_caps = WHO_HAS.captures(log);
                     let tell_caps = TELL.captures(log);
@@ -307,12 +305,11 @@ fn handle_fs(log: &str) -> Option<Value> {
         fs.duration = (&caps[3]).to_string().parse().unwrap(); // 2nd‑to‑last word
         let nameid = &caps[4]; // last word
         let a: Vec<&str> = nameid.rsplit(".").collect();
-        fs.p_name = a[1..a.len()-1].join(".").to_string();
+        fs.p_name = a[1..a.len() - 1].join(".").to_string();
         fs.pid = a[0].to_string().parse().unwrap();
     } else {
         return None;
     }
-
 
     let f = FILE_PATHS
         .find_iter(log)
