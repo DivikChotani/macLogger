@@ -14,8 +14,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, from_str};
 use structopt::StructOpt;
 use lazy_static::lazy_static;
-
-
+use opentelemetry::{global, KeyValue};
+use opentelemetry_sdk::metrics::SdkMeterProvider;
+use opentelemetry_sdk::Resource;
+use opentelemetry_stdout;
 lazy_static! {
 
     //network handling regex
@@ -43,7 +45,37 @@ enum LogType {
     Fs,
     Net,
 }
+
+fn init_meter_provider() -> opentelemetry_sdk::metrics::SdkMeterProvider {
+    let exporter = opentelemetry_stdout::MetricExporterBuilder::default()
+        // Build exporter using Delta Temporality (Defaults to Temporality::Cumulative)
+        // .with_temporality(opentelemetry_sdk::metrics::Temporality::Delta)
+        .build();
+    let provider = SdkMeterProvider::builder()
+        .with_periodic_exporter(exporter)
+        .with_resource(
+            Resource::builder()
+                .with_service_name("metrics-basic-example")
+                .build(),
+        )
+        .build();
+    global::set_meter_provider(provider.clone());
+    provider
+}
 fn main() -> Result<(), Box<dyn Error>> {
+
+    let meter_provider = init_meter_provider();
+
+    
+    let meter = global::meter("service");
+    let counter = meter
+        .u64_counter("net_tracer")
+        .build();
+
+    let hist = meter
+        .f64_histogram("total counts")
+        .build();
+
     let opt = Opt::from_args();
     let is_root = unsafe { getuid() == 0 };
 
@@ -126,17 +158,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     while !term.load(std::sync::atomic::Ordering::Relaxed) {
         match r.recv() {
             Ok((cmd, mes)) => {
-                println!("{mes}");
-
+                // println!("{mes}");
+                
                 let log = match cmd {
                     LogType::Fs => handle_fs(&mes),
                     LogType::Sys => handle_sys(&mes),
                     LogType::Net => network_handler.handle_net(&mes),
                 };
-                match log {
-                    Some(val) => println!("{val:#?}"),
-                    _ => {}
-                }
+                let Some(log) = log else {
+                    continue
+                };
             }
             Err(_) => break,
         }
@@ -144,6 +175,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     for (_i, t) in polling_threads.into_iter().enumerate() {
         let _ = t.join();
     }
+    meter_provider.shutdown()?;
+
     Ok(())
 }
 
