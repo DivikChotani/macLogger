@@ -6,7 +6,8 @@ use std::{
     process::{Child, Command, Stdio},
     thread::JoinHandle,
     thread,
-    sync::{Arc, atomic::AtomicBool}
+    sync::{Arc, atomic::AtomicBool},
+    time::Instant
 };
 use crossbeam_channel::unbounded;
 use regex::Regex;
@@ -69,11 +70,36 @@ fn main() -> Result<(), Box<dyn Error>> {
     
     let meter = global::meter("service");
     let counter = meter
-        .u64_counter("net_tracer")
+        .u64_counter("log_tracer")
         .build();
 
     let hist = meter
-        .f64_histogram("total counts")
+        .f64_histogram("total_counts")
+        .with_description("My histogram example description")
+        .with_boundaries(vec![
+    0.000015,  // 15 µs
+    0.00002,   // 20 µs
+    0.000025,  // 25 µs
+    0.00003,   // 30 µs
+    0.000035,  // 35 µs
+    0.00004,   // 40 µs
+    0.000045,  // 45 µs
+    0.00005,   // 50 µs
+    0.00006,   // 60 µs
+    0.00007,   // 70 µs
+    0.00008,   // 80 µs
+    0.00009,   // 90 µs
+    0.0001,    // 100 µs
+    0.000125,  // 125 µs
+    0.00015,   // 150 µs
+    0.0002,    // 200 µs
+    0.0003,    // 300 µs
+    0.0005,    // 500 µs
+    0.001,     // 1 ms
+    0.002,     // 2 ms
+    0.005,     // 5 ms
+    0.01       // 10 ms
+])
         .build();
 
     let opt = Opt::from_args();
@@ -114,7 +140,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let (s, r) = unbounded();
 
-    let child_ps = vec![(LogType::Sys, sys), (LogType::Fs, fs), (LogType::Net, net)];
+    let fs_label = KeyValue::new("fs", "total count");
+    let sys_label = KeyValue::new("sys", "total count");
+    let net_label = KeyValue::new("net", "total count");
+    let child_ps = vec![(LogType::Sys, sys, fs_label), (LogType::Fs, fs, sys_label), (LogType::Net, net, net_label)];
 
     let term = Arc::new(AtomicBool::new(false));
 
@@ -123,7 +152,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut polling_threads: Vec<JoinHandle<()>> = Vec::new();
 
-    for (cmd, child) in child_ps {
+    for (cmd, child, label) in child_ps {
         let Some(mut kid) = child else {
             continue;
         };
@@ -136,7 +165,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             while !term_ref.load(std::sync::atomic::Ordering::Relaxed) {
                 let mut line = String::new();
                 if let Ok(_) = reader.read_line(&mut line) {
-                    match send.send((cmd, line)) {
+                    match send.send((cmd, line, label.clone())) {
                         Ok(_) => {}
                         Err(_) => {
                             println!("Failed to send message");
@@ -157,17 +186,23 @@ fn main() -> Result<(), Box<dyn Error>> {
     drop(s);
     while !term.load(std::sync::atomic::Ordering::Relaxed) {
         match r.recv() {
-            Ok((cmd, mes)) => {
+            Ok((cmd, mes, label)) => {
                 // println!("{mes}");
-                
+                let now = Instant::now();
+
                 let log = match cmd {
                     LogType::Fs => handle_fs(&mes),
                     LogType::Sys => handle_sys(&mes),
                     LogType::Net => network_handler.handle_net(&mes),
                 };
+
+                let elapsed_time = now.elapsed();
+
                 let Some(log) = log else {
                     continue
                 };
+                counter.add(1, &[label.clone()]);
+                hist.record(elapsed_time.as_secs_f64(), &[label]);
             }
             Err(_) => break,
         }
@@ -271,9 +306,9 @@ fn handle_fs(log: &str) -> Option<Value> {
         fs.event_type = (&caps[2]).to_string(); // 2nd word
         fs.duration = (&caps[3]).to_string().parse().unwrap(); // 2nd‑to‑last word
         let nameid = &caps[4]; // last word
-        let a: Vec<&str> = nameid.split(".").collect();
-        fs.p_name = a[0].to_string();
-        fs.pid = a[1].to_string().parse().unwrap();
+        let a: Vec<&str> = nameid.rsplit(".").collect();
+        fs.p_name = a[1..a.len()-1].join(".").to_string();
+        fs.pid = a[0].to_string().parse().unwrap();
     } else {
         return None;
     }
