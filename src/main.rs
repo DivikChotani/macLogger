@@ -32,7 +32,6 @@ lazy_static! {
     static ref PACKET_LEN: Regex = Regex::new(r"\blength[: ]+(\d+)\b").unwrap();
     static ref TIME_STAMP: Regex = Regex::new(r"^([0-9\.\-\/]+)\s+([0-9\.\-:]+)").unwrap();
     static ref PROTO: Regex = Regex::new(r"\bproto\s+(?<proto>\w+)").unwrap();
-
     static ref TYPE: Regex = Regex::new(r"\bARP,\s+(?P<type>\w+)").unwrap();
     static ref WHO_HAS: Regex = Regex::new(r"\bwho-has\s+(?P<who_has>[\w\.:]+)").unwrap();
     static ref TELL: Regex = Regex::new(r"\btell\s+(?P<tell>[\w\.:]+)").unwrap();
@@ -201,7 +200,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
                 let elapsed_time = now.elapsed();
 
-                let Some(log) = log else { continue };
+                let Some(_log) = log else { continue };
                 counter.add(1, &[label.clone()]);
                 hist.record(elapsed_time.as_secs_f64(), &[label]);
             }
